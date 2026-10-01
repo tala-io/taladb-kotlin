@@ -1,5 +1,12 @@
 package dev.taladb
 
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -15,6 +22,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
+import kotlin.coroutines.coroutineContext
 
 /**
  * A named set of documents in a [TalaDB] database, decoded as [T].
@@ -91,6 +99,43 @@ public class TalaCollection<T> internal constructor(
      */
     public suspend fun aggregate(pipeline: List<JsonObject>): List<JsonObject> =
         call("aggregate", { listOf(JsonArray(pipeline)) }) { result -> result.jsonArray.map { it.jsonObject } }
+
+    // -- Live queries ---------------------------------------------------------
+
+    /**
+     * The documents matching [filter], now and after every write that changes
+     * them.
+     *
+     * Emits the current result first, then a fresh result whenever a write —
+     * through any [TalaDB] handle on this database — changes it. Rapid writes
+     * coalesce into one emission of the latest state; nothing is skipped.
+     *
+     * Cold and independent per collector: collecting opens a native
+     * subscription, and cancelling the collector closes it within a fraction
+     * of a second. Closing the database ends every collection with
+     * [IllegalStateException].
+     *
+     * ```kotlin
+     * notes.watch(buildJsonObject { put("done", false) })
+     *     .collect { open -> render(open) }
+     * ```
+     */
+    public fun watch(filter: JsonObject = MatchAll): Flow<List<T>> =
+        flow {
+            // Subscribe before reading the initial state, so a write that
+            // lands between the two still wakes the loop below.
+            val watch = database.watchOpen(name, filter)
+            try {
+                emit(call("find", { listOf(filter) }) { it })
+                while (true) {
+                    coroutineContext.ensureActive()
+                    database.watchNext(watch)?.let { emit(it) }
+                }
+            } finally {
+                withContext(NonCancellable) { database.watchClose(watch) }
+            }
+        }.distinctUntilChanged()
+            .map { snapshot -> snapshot.jsonArray.map(::decode) }
 
     // -- Indexes --------------------------------------------------------------
 
@@ -186,6 +231,168 @@ public class TalaCollection<T> internal constructor(
         )
     }
 
+    /**
+     * Vector search with execution control: exact or approximate mode,
+     * `efSearch`, a score threshold, offset pagination and grouping. Returns
+     * how the query ran alongside the hits. [findNearest] covers the common
+     * case.
+     */
+    public suspend fun searchVectors(
+        field: String,
+        vector: FloatArray,
+        topK: Int,
+        filter: JsonObject? = null,
+        options: VectorQueryOptions = VectorQueryOptions(),
+    ): VectorQueryResult<T> {
+        require(topK >= 0) { "topK must not be negative" }
+        val request =
+            buildJsonObject {
+                put("op", "search")
+                put("field", field)
+                put("query", vector.toJsonArray())
+                put("topK", topK)
+                filter?.let { put("filter", it) }
+                put("options", options.toJson())
+            }
+        return vectorCommand(request) { result ->
+            val o = result.jsonObject
+            VectorQueryResult(
+                hits = decodeScored(o.getValue("hits")),
+                execution = TalaJson.decodeFromJsonElement(VectorExecution.serializer(), o.getValue("execution")),
+                nextOffset = o["nextOffset"]?.jsonPrimitive?.intOrNull,
+            )
+        }
+    }
+
+    /** Every document whose [field] scores at least [scoreThreshold] against [vector], by exact search. */
+    public suspend fun findWithin(
+        field: String,
+        vector: FloatArray,
+        scoreThreshold: Float,
+        filter: JsonObject? = null,
+    ): VectorQueryResult<T> =
+        searchVectors(
+            field,
+            vector,
+            topK = Int.MAX_VALUE,
+            filter = filter,
+            options = VectorQueryOptions(mode = VectorSearchMode.Exact, scoreThreshold = scoreThreshold),
+        )
+
+    /** Whether [field]'s vector index is flat, ready, stale or needs a rebuild, and any build in progress. */
+    public suspend fun vectorIndexStatus(field: String): VectorIndexStatus =
+        vectorCommand(buildJsonObject { put("op", "status"); put("field", field) }) {
+            TalaJson.decodeFromJsonElement(VectorIndexStatus.serializer(), it)
+        }
+
+    /**
+     * Build or rebuild [field]'s HNSW graph in batches of [batchSize]
+     * insertions, reporting progress after each. The index stays queryable
+     * throughout — searches use exact scan until the graph is ready — so this
+     * is safe to run while the app is in use.
+     *
+     * Cancelling the calling coroutine cancels the build.
+     *
+     * @throws TalaDBException if the build fails.
+     */
+    public suspend fun rebuildVectorIndex(
+        field: String,
+        options: HnswOptions? = null,
+        batchSize: Int = 32,
+        onProgress: (VectorBuildProgress) -> Unit = {},
+    ): VectorBuildProgress {
+        require(batchSize in 1..1024) { "batchSize must be in 1..1024" }
+        var progress = beginVectorBuild(field, options)
+        try {
+            onProgress(progress)
+            while (progress.state == VectorBuildState.Building) {
+                coroutineContext.ensureActive()
+                progress = stepVectorBuild(field, progress.id, batchSize)
+                onProgress(progress)
+            }
+        } catch (e: Throwable) {
+            if (progress.state == VectorBuildState.Building) {
+                withContext(NonCancellable) { runCatching { cancelVectorBuild(field, progress.id) } }
+            }
+            throw e
+        }
+        if (progress.state == VectorBuildState.Failed) {
+            throw TalaDBException(progress.error ?: "vector index rebuild failed")
+        }
+        return progress
+    }
+
+    /** Start a batched HNSW build; drive it with [stepVectorBuild]. [rebuildVectorIndex] does both. */
+    public suspend fun beginVectorBuild(
+        field: String,
+        options: HnswOptions? = null,
+    ): VectorBuildProgress =
+        vectorCommand(
+            buildJsonObject {
+                put("op", "beginBuild")
+                put("field", field)
+                options?.let { put("options", it.toJson()) }
+            },
+            ::decodeProgress,
+        )
+
+    /** Insert up to [batchSize] more vectors into the build [id]. */
+    public suspend fun stepVectorBuild(
+        field: String,
+        id: String,
+        batchSize: Int = 32,
+    ): VectorBuildProgress {
+        require(batchSize in 1..1024) { "batchSize must be in 1..1024" }
+        return vectorCommand(
+            buildJsonObject {
+                put("op", "stepBuild")
+                put("field", field)
+                put("id", id)
+                put("batchSize", batchSize)
+            },
+            ::decodeProgress,
+        )
+    }
+
+    public suspend fun cancelVectorBuild(
+        field: String,
+        id: String,
+    ): VectorBuildProgress =
+        vectorCommand(
+            buildJsonObject {
+                put("op", "cancelBuild")
+                put("field", field)
+                put("id", id)
+            },
+            ::decodeProgress,
+        )
+
+    /**
+     * Measure how often approximate search finds the exact top [topK] for
+     * [queries] — use real query embeddings, not stored vectors — and how
+     * long each path takes. For tuning `efSearch` and graph options.
+     */
+    public suspend fun measureVectorRecall(
+        field: String,
+        queries: List<FloatArray>,
+        topK: Int,
+        filter: JsonObject? = null,
+        options: VectorQueryOptions = VectorQueryOptions(),
+    ): VectorRecall {
+        require(queries.size in 1..1000) { "recall needs 1..1000 queries" }
+        require(topK >= 1) { "topK must be positive" }
+        return vectorCommand(
+            buildJsonObject {
+                put("op", "recall")
+                put("field", field)
+                put("queries", JsonArray(queries.map { it.toJsonArray() }))
+                put("topK", topK)
+                filter?.let { put("filter", it) }
+                put("options", options.toJson())
+            },
+        ) { TalaJson.decodeFromJsonElement(VectorRecall.serializer(), it) }
+    }
+
     // -- Full-text ------------------------------------------------------------
 
     /**
@@ -265,6 +472,14 @@ public class TalaCollection<T> internal constructor(
             )
 
     private fun decode(element: JsonElement): T = TalaJson.decodeFromJsonElement(serializer, element)
+
+    private suspend fun <R> vectorCommand(
+        request: JsonObject,
+        decode: (JsonElement) -> R,
+    ): R = call("vectorCommand", { listOf(request) }, decode)
+
+    private fun decodeProgress(element: JsonElement): VectorBuildProgress =
+        TalaJson.decodeFromJsonElement(VectorBuildProgress.serializer(), element)
 
     private fun decodeScored(result: JsonElement): List<ScoredDocument<T>> =
         result.jsonArray.map { hit ->

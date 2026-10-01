@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.maven.publish)
+    alias(libs.plugins.dokka)
 }
 
 // Native inputs staged by scripts/build-engine.sh or scripts/fetch-engine.sh.
@@ -151,9 +152,10 @@ tasks.withType<Test>().configureEach {
 // ---------------------------------------------------------------------------
 
 mavenPublishing {
-    // Maven Central requires a javadoc jar; javadoc cannot read Kotlin, so it
-    // is empty until Dokka is added. Sources ship for IDE navigation.
-    configure(AndroidSingleVariantLibrary(JavadocJar.Empty(), SourcesJar.Sources(), "release"))
+    // The javadoc jar Maven Central requires carries the Dokka HTML docs.
+    configure(
+        AndroidSingleVariantLibrary(JavadocJar.Dokka("dokkaGeneratePublicationHtml"), SourcesJar.Sources(), "release"),
+    )
     publishToMavenCentral()
     if (providers.gradleProperty("signingInMemoryKey").isPresent) {
         signAllPublications()
@@ -185,6 +187,22 @@ mavenPublishing {
             url = "https://github.com/tala-io/taladb-kotlin"
             connection = "scm:git:https://github.com/tala-io/taladb-kotlin.git"
             developerConnection = "scm:git:ssh://git@github.com/tala-io/taladb-kotlin.git"
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// API docs — ./gradlew :taladb:dokkaGeneratePublicationHtml
+// ---------------------------------------------------------------------------
+
+dokka {
+    moduleName = "taladb-android"
+    dokkaSourceSets.configureEach {
+        includes.from("Module.md")
+        sourceLink {
+            localDirectory = file("src/main/kotlin")
+            remoteUrl("https://github.com/tala-io/taladb-kotlin/tree/main/taladb/src/main/kotlin")
+            remoteLineSuffix = "#L"
         }
     }
 }

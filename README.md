@@ -66,6 +66,57 @@ Every operation is a `suspend` function that runs on `Dispatchers.IO` (or the
 dispatcher you pass to `open`), so it is safe to call from the main thread. One
 `TalaDB` can be shared freely across threads and coroutines.
 
+### Live queries
+
+`watch` returns a `Flow` that emits the current result, then a fresh one after
+every write that changes it. Rapid writes coalesce into one emission, and
+nothing is missed:
+
+```kotlin
+notes.watch(buildJsonObject { put("done", false) })
+    .collect { open -> render(open) }
+```
+
+Each collector holds its own subscription, which closes when the collector is
+cancelled. Closing the database ends every collection.
+
+### Migrations
+
+```kotlin
+val db = TalaDB.open(file, migrations = listOf(
+    Migration(1, "Index users by email") { db -> db.collection("users").createIndex("email") },
+    Migration(2, "Default role") { db ->
+        db.collection("users").updateMany(
+            buildJsonObject { putJsonObject("role") { put("\$exists", false) } },
+            buildJsonObject { putJsonObject("\$set") { put("role", "user") } },
+        )
+    },
+))
+```
+
+Pending migrations run in version order at open. The stored version advances
+after each one, so a failure resumes from the failed migration on the next
+open. Write migrations so they are safe to run again.
+
+### Vector search, in depth
+
+`findNearest` covers the common case. `searchVectors` adds exact or approximate
+mode, `efSearch`, score thresholds, pagination and grouping, and reports how the
+query ran. For large collections, build an HNSW graph in batches without
+blocking the app:
+
+```kotlin
+notes.rebuildVectorIndex("embedding", HnswOptions(m = 16)) { progress ->
+    showProgress(progress.processed, progress.total)
+}
+val result = notes.searchVectors("embedding", query, topK = 10,
+    options = VectorQueryOptions(efSearch = 128))
+println(result.execution.path)          // "hnsw" or "exact", and why in .reason
+```
+
+`measureVectorRecall` checks approximate results against exact search on your
+own query embeddings. Use it to tune `efSearch` and the graph options.
+
 - **Filters, updates and pipelines** use TalaDB's JSON operators — `$eq`, `$gt`,
   `$in`, `$contains`, `$set`, `$inc`, `$push`, `$group`, … — documented in the
   [engine docs](https://taladb.dev). Build them with `buildJsonObject`.
@@ -78,6 +129,12 @@ dispatcher you pass to `open`), so it is safe to call from the main thread. One
   passphrase, duplicate `_id`) throw `TalaDBException`; a call after `close()`
   throws `IllegalStateException`.
 - **Closing**: `close()` waits for running operations and is idempotent.
+
+## API reference
+
+`./gradlew :taladb:dokkaGeneratePublicationHtml` writes the API docs to
+`taladb/build/dokka/html`. They also ship in the javadoc jar on Maven Central,
+and `docs.yml` publishes them to GitHub Pages from `main`.
 
 ## How it works
 

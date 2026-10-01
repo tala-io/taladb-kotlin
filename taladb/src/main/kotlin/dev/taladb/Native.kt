@@ -66,6 +66,14 @@ internal object Native {
         filter: ByteArray?,
     ): ByteArray
 
+    /** Returns a non-zero watch handle; `filter` may be null for all documents. */
+    external fun watchOpen(handle: Long, collection: ByteArray, filter: ByteArray?): Long
+
+    /** The next snapshot (a JSON array), or null if [timeoutMs] passed without a write. */
+    external fun watchNext(watch: Long, timeoutMs: Int): ByteArray?
+
+    external fun watchClose(watch: Long)
+
     external fun hybridSearch(
         handle: Long,
         collection: ByteArray,

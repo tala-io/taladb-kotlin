@@ -5,7 +5,8 @@
  * operation name and a JSON argument array, so adding an operation to the
  * Kotlin API rarely touches this file. Only calls that carry a float vector
  * have their own entry points, so the vector crosses as a float array rather
- * than as JSON text.
+ * than as JSON text — plus the three live-query calls, which hold a handle of
+ * their own.
  *
  * Strings cross as byte arrays, never as jstring
  * ----------------------------------------------
@@ -270,4 +271,43 @@ release_tf:
 release_col:
     utf8_release(env, &col);
     return out;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Live queries                                                               */
+/* ------------------------------------------------------------------------- */
+
+/* Returns a non-zero watch handle. `filter` may be null for all documents. */
+JNIEXPORT jlong JNICALL Java_dev_taladb_Native_watchOpen(
+    JNIEnv *env, jobject self, jlong h, jbyteArray collection, jbyteArray filter) {
+    (void)self;
+    Utf8 col, flt;
+    if (utf8_get(env, collection, &col) != 0) return 0;
+    if (utf8_get(env, filter, &flt) != 0) { utf8_release(env, &col); return 0; }
+    TalaDbWatch *w = taladb_watch(handle_of(h), utf8_ptr(&col), utf8_ptr(&flt));
+    if (w == NULL) throw_last_error(env, "failed to open live query");
+    utf8_release(env, &flt);
+    utf8_release(env, &col);
+    return (jlong)(intptr_t)w;
+}
+
+/* The next snapshot as a JSON array, or null if `timeoutMs` passed without a
+ * write. */
+JNIEXPORT jbyteArray JNICALL Java_dev_taladb_Native_watchNext(
+    JNIEnv *env, jobject self, jlong w, jint timeoutMs) {
+    (void)self;
+    char *json = NULL;
+    int32_t rc = taladb_watch_next((TalaDbWatch *)(intptr_t)w,
+                                   timeoutMs < 0 ? 0u : (uint32_t)timeoutMs, &json);
+    if (rc == 0) return NULL;
+    if (rc < 0) {
+        throw_last_error(env, "live query failed");
+        return NULL;
+    }
+    return take_result(env, json, "live query failed");
+}
+
+JNIEXPORT void JNICALL Java_dev_taladb_Native_watchClose(JNIEnv *env, jobject self, jlong w) {
+    (void)env; (void)self;
+    taladb_watch_close((TalaDbWatch *)(intptr_t)w);
 }

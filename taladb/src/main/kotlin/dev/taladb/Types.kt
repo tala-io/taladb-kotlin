@@ -1,6 +1,9 @@
 package dev.taladb
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -39,10 +42,11 @@ public enum class VectorMetric(internal val wire: String) {
 }
 
 /** Vector compression used inside an HNSW graph. [Binary] requires [VectorMetric.Cosine]. */
-public enum class Quantization(internal val wire: String) {
-    None("none"),
-    Scalar("scalar"),
-    Binary("binary"),
+@Serializable
+public enum class Quantization {
+    @SerialName("none") None,
+    @SerialName("scalar") Scalar,
+    @SerialName("binary") Binary,
 }
 
 /**
@@ -52,17 +56,18 @@ public enum class Quantization(internal val wire: String) {
  * collection holds tens of thousands of vectors. Requires `2 <= m <= 128` and
  * `m <= efConstruction <= 100000`.
  */
+@Serializable
 public data class HnswOptions(
     val m: Int = 32,
     val efConstruction: Int = 200,
     val quantization: Quantization = Quantization.None,
 ) {
-    internal fun toJson(): JsonObject =
-        buildJsonObject {
-            put("m", m)
-            put("efConstruction", efConstruction)
-            put("quantization", quantization.wire)
-        }
+    init {
+        require(m in 2..128) { "m must be in 2..128" }
+        require(efConstruction in m..100_000) { "efConstruction must be in m..100000" }
+    }
+
+    internal fun toJson(): JsonObject = TalaJson.encodeToJsonElement(serializer(), this).jsonObject
 }
 
 /** BM25 parameters for [TalaCollection.searchText] and [TalaCollection.hybridSearch]. `null` keeps the engine default. */

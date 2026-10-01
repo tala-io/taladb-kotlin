@@ -39,6 +39,11 @@ public class TalaDB private constructor(
     // native code, not an exception.
     private val lock = ReentrantReadWriteLock()
 
+    // Native live-query handles, guarded by `lock`. Each keeps the database's
+    // storage open, so close() closes them all rather than leaving the file
+    // held until each collector next wakes.
+    private val watches = HashSet<Long>()
+
     /** `true` once [close] has run. */
     public val isClosed: Boolean
         get() = lock.read { handle == 0L }
@@ -98,9 +103,48 @@ public class TalaDB private constructor(
     override fun close() {
         lock.write {
             if (handle != 0L) {
+                watches.forEach(Native::watchClose)
+                watches.clear()
                 Native.close(handle)
                 handle = 0L
             }
+        }
+    }
+
+    // -- Live queries (used by TalaCollection.watch) ---------------------------
+
+    internal suspend fun watchOpen(
+        collection: String,
+        filter: JsonObject,
+    ): Long =
+        withContext(dispatcher) {
+            val name = collection.cString()
+            val filterBytes = filter.toString().cString()
+            lock.write {
+                check(handle != 0L) { "TalaDB database is closed" }
+                Native.watchOpen(handle, name, filterBytes).also { watches += it }
+            }
+        }
+
+    /**
+     * Wait up to [WATCH_POLL_MS] for a write. Returns the new snapshot, or
+     * null on timeout. Holds the read lock only for that bounded wait, so
+     * close() is delayed by at most one poll.
+     */
+    internal suspend fun watchNext(watch: Long): JsonElement? =
+        withContext(dispatcher) {
+            val bytes =
+                lock.read {
+                    check(handle != 0L && watch in watches) { "TalaDB database is closed" }
+                    Native.watchNext(watch, WATCH_POLL_MS)
+                }
+            bytes?.let { TalaJson.parseToJsonElement(it.decodeToString()) }
+        }
+
+    /** Idempotent: close() may already have closed it. */
+    internal fun watchClose(watch: Long) {
+        lock.write {
+            if (watches.remove(watch)) Native.watchClose(watch)
         }
     }
 
@@ -138,24 +182,51 @@ public class TalaDB private constructor(
         )
 
     public companion object {
+        /** How long one native wait for a live-query write lasts; bounds cancellation latency. */
+        internal const val WATCH_POLL_MS: Int = 250
+
         /**
-         * Open the database at [file], creating it if it does not exist.
+         * Open the database at [file], creating it if it does not exist, and
+         * run any pending [migrations] before returning.
          *
+         * @param migrations Application schema migrations; see [Migration].
+         *   Those with a version above the stored [userVersion] run in version
+         *   order, and the stored version advances after each one. If one
+         *   throws, the database is closed, the error propagates, and the next
+         *   open resumes from that migration.
          * @param dispatcher Where every operation on this database runs.
          *   Defaults to [Dispatchers.IO]; operations block a thread for their
          *   whole duration, so it must be a dispatcher that tolerates that.
          * @throws TalaDBException if the file cannot be opened — including a
          *   missing or wrong passphrase for an encrypted database.
+         * @throws IllegalArgumentException if two migrations share a version or
+         *   a version is not in `1..4294967295`.
          */
         public suspend fun open(
             file: File,
             config: TalaDBConfig = TalaDBConfig(),
+            migrations: List<Migration> = emptyList(),
             dispatcher: CoroutineDispatcher = Dispatchers.IO,
-        ): TalaDB =
-            withContext(dispatcher) {
-                Native.ensureCompatible()
-                TalaDB(Native.open(file.path.cString(), config.toJson().cString()), dispatcher)
+        ): TalaDB {
+            val pending = Migration.validated(migrations)
+            val db =
+                withContext(dispatcher) {
+                    Native.ensureCompatible()
+                    TalaDB(Native.open(file.path.cString(), config.toJson().cString()), dispatcher)
+                }
+            try {
+                val current = db.userVersion()
+                for (migration in pending) {
+                    if (migration.version <= current) continue
+                    migration.up(db)
+                    db.setUserVersion(migration.version)
+                }
+            } catch (e: Throwable) {
+                db.close()
+                throw e
             }
+            return db
+        }
 
         /** The C ABI version of the loaded engine library. */
         public val abiVersion: Int
