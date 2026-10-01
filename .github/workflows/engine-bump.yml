@@ -1,0 +1,54 @@
+name: Engine bump
+
+# The engine's release workflow sends `taladb-release` when it publishes, with
+# the archive's URL and SHA-256. This pins that release and opens a PR; CI on
+# the PR then builds and tests against it, so an engine release that breaks
+# this package is caught here rather than by its users.
+on:
+  repository_dispatch:
+    types: [taladb-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Engine version, without the leading v
+        required: true
+      sha256:
+        description: SHA-256 of taladb-ffi-android-<version>.zip
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin the release
+        env:
+          VERSION: ${{ github.event.client_payload.version || inputs.version }}
+          SHA256: ${{ github.event.client_payload.sha256 || inputs.sha256 }}
+        run: |
+          set -euo pipefail
+          URL="https://github.com/tala-io/taladb/releases/download/v$VERSION/taladb-ffi-android-$VERSION.zip"
+          sed -i \
+            -e "s|^ref=.*|ref=v$VERSION|" \
+            -e "s|^version=.*|version=$VERSION|" \
+            -e "s|^url=.*|url=$URL|" \
+            -e "s|^sha256=.*|sha256=$SHA256|" \
+            engine.properties
+          git diff
+
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: engine-bump/v${{ github.event.client_payload.version || inputs.version }}
+          commit-message: "chore: build against TalaDB engine v${{ github.event.client_payload.version || inputs.version }}"
+          title: "Build against TalaDB engine v${{ github.event.client_payload.version || inputs.version }}"
+          body: |
+            Pins engine release v${{ github.event.client_payload.version || inputs.version }} in `engine.properties`.
+
+            CI builds the AAR from the release archive and runs the unit and instrumented
+            tests against it. If the release changed the C ABI, `scripts/fetch-engine.sh`
+            fails on the `abi` check: update the JNI shim and `abi=` in the same PR.

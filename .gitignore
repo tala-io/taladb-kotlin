@@ -1,0 +1,13 @@
+# Gradle / IDE
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+.cxx/
+captures/
+
+# Staged engine binaries — produced by scripts/build-engine.sh or
+# scripts/fetch-engine.sh, never committed.
+/engine/

@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: "30.0.16248370"
+
+jobs:
+  # Stage the engine once and hand it to the other jobs, so the emulator job
+  # tests the same libraries the build job checked.
+  engine:
+    name: Stage engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read engine.properties
+        id: engine
+        run: |
+          for key in ref version sha256; do
+            echo "$key=$(sed -n "s/^$key=//p" engine.properties)" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: actions/checkout@v4
+        with:
+          repository: tala-io/taladb
+          ref: ${{ steps.engine.outputs.ref }}
+          path: engine-src
+
+      # rust-toolchain.toml in the engine pins the version; rustup honours it.
+      - name: Rust toolchain and Android targets
+        working-directory: engine-src
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine-src
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;${{ env.NDK_VERSION }}"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # A pinned release ships its own Android libraries; the host library the
+      # unit tests load is always built from source, since releases carry none.
+      - name: Build or fetch engine
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          if [ -n "${{ steps.engine.outputs.sha256 }}" ]; then
+            HOST_ONLY=1 scripts/build-engine.sh engine-src
+            scripts/fetch-engine.sh
+          else
+            scripts/build-engine.sh engine-src
+          fi
+          cat engine/SOURCE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine
+          path: engine/
+
+  build:
+    name: Unit tests and AAR
+    needs: engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine
+          path: engine
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;${{ env.NDK_VERSION }} cmake;3.22.1"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests (host JVM) and release AAR
+        run: ./gradlew :taladb:testDebugUnitTest :taladb:assembleRelease --console=plain
+
+      - name: AAR libraries load on device (ABIs, 16 KB alignment, dependency names)
+        run: scripts/check-aar.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: taladb/build/reports/tests/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aar
+          path: taladb/build/outputs/aar/
+
+  android:
+    name: Instrumented tests (emulator)
+    needs: engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine
+          path: engine
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;${{ env.NDK_VERSION }} cmake;3.22.1"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: ./gradlew :taladb:connectedDebugAndroidTest --console=plain

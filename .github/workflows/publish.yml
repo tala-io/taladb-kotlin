@@ -1,0 +1,71 @@
+name: Publish
+
+# Tag vX.Y.Z to publish dev.taladb:taladb-android:X.Y.Z to Maven Central.
+#
+# Secrets: MAVEN_CENTRAL_USERNAME / MAVEN_CENTRAL_PASSWORD (a Central Portal
+# user token for the dev.taladb namespace), SIGNING_KEY (ASCII-armoured GPG
+# private key) and SIGNING_KEY_PASSWORD.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  NDK_VERSION: "30.0.16248370"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read engine.properties
+        id: engine
+        run: |
+          ref="$(sed -n 's/^ref=//p' engine.properties)"
+          sha="$(sed -n 's/^sha256=//p' engine.properties)"
+          if [ -z "$sha" ]; then
+            echo "::error::engine.properties pins no engine release. Published AARs must carry release binaries."
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: tala-io/taladb
+          ref: ${{ steps.engine.outputs.ref }}
+          path: engine-src
+
+      - name: Rust toolchain
+        working-directory: engine-src
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;${{ env.NDK_VERSION }} cmake;3.22.1"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Android libraries from the release archive, verified against its
+      # SHA-256; the host library only feeds the unit tests below.
+      - name: Stage engine
+        run: |
+          HOST_ONLY=1 scripts/build-engine.sh engine-src
+          scripts/fetch-engine.sh
+
+      - name: Test, build and check
+        run: |
+          ./gradlew :taladb:testDebugUnitTest :taladb:assembleRelease --console=plain
+          scripts/check-aar.sh
+
+      - name: Publish to Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: ./gradlew publishAndReleaseToMavenCentral -PVERSION_NAME="${GITHUB_REF_NAME#v}" --console=plain --no-configuration-cache
