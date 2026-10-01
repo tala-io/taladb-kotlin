@@ -102,6 +102,19 @@ class TalaDBTest {
      * they are refused instead. Strings inside JSON arguments are unaffected —
      * the encoder escapes NUL — which the round-trip test above covers.
      */
+    /** The README's update example filters on `_id`; keep it working. */
+    @Test
+    fun documentsCanBeAddressedByTheirId() =
+        runTest {
+            val notes = db.collection<Note>("notes")
+            val id = notes.insert(Note(title = "Groceries"))
+            notes.insert(Note(title = "Other"))
+
+            assertTrue(notes.updateOne(filter { put("_id", id) }, filter { putJsonObject("\$set") { put("title", "Weekly groceries") } }))
+            assertEquals("Weekly groceries", notes.findOne(filter { put("_id", id) })?.title)
+            assertEquals(1L, notes.count(filter { put("title", "Other") }))
+        }
+
     @Test
     fun nulInACStringArgumentIsRejectedRatherThanTruncated() {
         assertThrows(IllegalArgumentException::class.java) { db.collection("a\u0000b") }
