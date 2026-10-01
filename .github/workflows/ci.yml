@@ -135,6 +135,17 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # The runner image ships ~20 GB of toolchains this job never uses, and
+      # without removing some the emulator cannot create its userdata
+      # partition: it exits at once with "Not enough space", and the runner
+      # action then polls a dead device until its boot timeout.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+          df -h /
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -146,5 +157,10 @@ jobs:
           api-level: 35
           arch: x86_64
           target: google_apis
+          cores: 4
+          # The image's default data partition is ~7 GB; a test APK needs a
+          # fraction of that.
+          disk-size: 2048M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-metrics
           disable-animations: true
           script: ./gradlew :taladb:connectedDebugAndroidTest --console=plain
