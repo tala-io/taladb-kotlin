@@ -30,7 +30,13 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # The default package list includes the legacy `tools` package, which
+      # the SDK repository no longer serves, so the step failed before Dokka
+      # ran. The runner image already has the SDK; only platform-tools is
+      # asked for.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - uses: gradle/actions/setup-gradle@v4
 

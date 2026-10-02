@@ -164,3 +164,12 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-metrics
           disable-animations: true
           script: ./gradlew :taladb:connectedDebugAndroidTest --console=plain
+
+      # Without these, a failure here says only "There were failing tests".
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-test-reports
+          path: |
+            taladb/build/reports/androidTests/
+            taladb/build/outputs/androidTest-results/
