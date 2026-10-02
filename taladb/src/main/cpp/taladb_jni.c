@@ -26,10 +26,15 @@
 #include <jni.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "taladb.h"
 
 static jclass g_tala_exception; /* dev/taladb/TalaDBException, global ref */
+static jclass g_string;
+static jmethodID g_exception_ctor;
+static jmethodID g_string_utf8_ctor;
+static jstring g_utf8_charset;
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     (void)reserved;
@@ -39,7 +44,30 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (local == NULL) return JNI_ERR;
     g_tala_exception = (*env)->NewGlobalRef(env, local);
     (*env)->DeleteLocalRef(env, local);
-    return g_tala_exception == NULL ? JNI_ERR : JNI_VERSION_1_6;
+    if (g_tala_exception == NULL) return JNI_ERR;
+    g_exception_ctor = (*env)->GetMethodID(env, g_tala_exception, "<init>", "(Ljava/lang/String;)V");
+    if (g_exception_ctor == NULL) return JNI_ERR;
+    local = (*env)->FindClass(env, "java/lang/String");
+    if (local == NULL) return JNI_ERR;
+    g_string = (*env)->NewGlobalRef(env, local);
+    (*env)->DeleteLocalRef(env, local);
+    if (g_string == NULL) return JNI_ERR;
+    g_string_utf8_ctor = (*env)->GetMethodID(env, g_string, "<init>", "([BLjava/lang/String;)V");
+    if (g_string_utf8_ctor == NULL) return JNI_ERR;
+    jstring charset = (*env)->NewStringUTF(env, "UTF-8"); /* ASCII is valid modified UTF-8. */
+    if (charset == NULL) return JNI_ERR;
+    g_utf8_charset = (*env)->NewGlobalRef(env, charset);
+    (*env)->DeleteLocalRef(env, charset);
+    return g_utf8_charset == NULL ? JNI_ERR : JNI_VERSION_1_6;
+}
+
+JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
+    (void)reserved;
+    JNIEnv *env;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) return;
+    (*env)->DeleteGlobalRef(env, g_tala_exception);
+    (*env)->DeleteGlobalRef(env, g_string);
+    (*env)->DeleteGlobalRef(env, g_utf8_charset);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -55,7 +83,26 @@ static void throw_by_name(JNIEnv *env, const char *cls, const char *msg) {
  * failed on this thread, or `fallback` if it left none. */
 static void throw_last_error(JNIEnv *env, const char *fallback) {
     const char *msg = taladb_last_error();
-    (*env)->ThrowNew(env, g_tala_exception, msg != NULL ? msg : fallback);
+    if (msg == NULL) msg = fallback;
+    /* ThrowNew expects modified UTF-8, whereas the engine returns standard
+     * UTF-8. Decode a byte array instead so supplementary characters survive. */
+    size_t n = strlen(msg);
+    if (n > INT32_MAX) {
+        throw_by_name(env, "java/lang/OutOfMemoryError", "error message exceeds the maximum Java array size");
+        return;
+    }
+    jbyteArray bytes = (*env)->NewByteArray(env, (jsize)n);
+    if (bytes == NULL) return;
+    (*env)->SetByteArrayRegion(env, bytes, 0, (jsize)n, (const jbyte *)msg);
+    if ((*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, bytes); return; }
+    jobject message = (*env)->NewObject(env, g_string, g_string_utf8_ctor, bytes, g_utf8_charset);
+    (*env)->DeleteLocalRef(env, bytes);
+    if (message == NULL) return;
+    jobject exception = (*env)->NewObject(env, g_tala_exception, g_exception_ctor, message);
+    (*env)->DeleteLocalRef(env, message);
+    if (exception == NULL) return;
+    (*env)->Throw(env, exception);
+    (*env)->DeleteLocalRef(env, exception);
 }
 
 /* A NUL-terminated UTF-8 string borrowed from a Kotlin ByteArray. */

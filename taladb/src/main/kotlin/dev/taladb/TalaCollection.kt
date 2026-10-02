@@ -327,13 +327,18 @@ public class TalaCollection<T> internal constructor(
         field: String,
         options: HnswOptions? = null,
     ): VectorBuildProgress =
-        vectorCommand(
-            buildJsonObject {
-                put("op", "beginBuild")
-                put("field", field)
-                options?.let { put("options", it.toJson()) }
+        database.acquireResource(
+            acquire = {
+                vectorCommand(
+                    buildJsonObject {
+                        put("op", "beginBuild")
+                        put("field", field)
+                        options?.let { put("options", it.toJson()) }
+                    },
+                    ::decodeProgress,
+                )
             },
-            ::decodeProgress,
+            release = { cancelVectorBuild(field, it.id) },
         )
 
     /** Insert up to [batchSize] more vectors into the build [id]. */

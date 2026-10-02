@@ -117,14 +117,18 @@ public class TalaDB private constructor(
         collection: String,
         filter: JsonObject,
     ): Long =
-        withContext(dispatcher) {
-            val name = collection.cString()
-            val filterBytes = filter.toString().cString()
-            lock.write {
-                check(handle != 0L) { "TalaDB database is closed" }
-                Native.watchOpen(handle, name, filterBytes).also { watches += it }
-            }
-        }
+        acquireResource(
+            dispatcher,
+            acquire = {
+                val name = collection.cString()
+                val filterBytes = filter.toString().cString()
+                lock.write {
+                    check(handle != 0L) { "TalaDB database is closed" }
+                    Native.watchOpen(handle, name, filterBytes).also { watches += it }
+                }
+            },
+            release = ::watchClose,
+        )
 
     /**
      * Wait up to [WATCH_POLL_MS] for a write. Returns the new snapshot, or
@@ -181,6 +185,11 @@ public class TalaDB private constructor(
             decode = decode,
         )
 
+    internal suspend fun <T : Any> acquireResource(
+        acquire: suspend () -> T,
+        release: suspend (T) -> Unit,
+    ): T = acquireResource(dispatcher, acquire, release)
+
     public companion object {
         /** How long one native wait for a live-query write lasts; bounds cancellation latency. */
         internal const val WATCH_POLL_MS: Int = 250
@@ -210,10 +219,14 @@ public class TalaDB private constructor(
         ): TalaDB {
             val pending = Migration.validated(migrations)
             val db =
-                withContext(dispatcher) {
-                    Native.ensureCompatible()
-                    TalaDB(Native.open(file.path.cString(), config.toJson().cString()), dispatcher)
-                }
+                acquireResource(
+                    dispatcher,
+                    acquire = {
+                        Native.ensureCompatible()
+                        TalaDB(Native.open(file.path.cString(), config.toJson().cString()), dispatcher)
+                    },
+                    release = { it.close() },
+                )
             try {
                 val current = db.userVersion()
                 for (migration in pending) {
