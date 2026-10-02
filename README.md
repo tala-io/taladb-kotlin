@@ -207,19 +207,6 @@ scripts/fetch-engine.sh
 ./gradlew :taladb:assembleRelease && scripts/check-aar.sh
 ```
 
-## Releasing
-
-1. When the engine publishes a release, its workflow dispatches to this repo
-   and `engine-bump.yml` opens a PR pinning it. CI tests the PR against the
-   release archive.
-2. Tag `vX.Y.Z` on `main`. `publish.yml` builds from the pinned release and
-   publishes `dev.taladb:taladb-android:X.Y.Z` to Maven Central. It refuses to
-   publish while no engine release is pinned.
-
-Repository secrets: `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`,
-`SIGNING_KEY`, `SIGNING_KEY_PASSWORD`. The engine repository needs
-`NATIVE_PACKAGES_DISPATCH_TOKEN` to send the release notification.
-
 ## License
 
 MIT or Apache-2.0, at your option.
