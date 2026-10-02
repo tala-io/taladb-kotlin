@@ -9,7 +9,8 @@
 -keep class dev.taladb.Native { *; }
 
 # The shim finds the exception class by name in JNI_OnLoad and constructs it
-# with a String. A renamed class fails the library load outright.
+# with (message, code). A renamed class or a stripped constructor fails the
+# library load outright.
 -keep class dev.taladb.TalaDBException {
-    <init>(java.lang.String);
+    <init>(java.lang.String, java.lang.String);
 }

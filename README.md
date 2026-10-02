@@ -22,6 +22,23 @@ dependencies {
 
 Requires `minSdk` 24. The AAR ships `arm64-v8a`, `armeabi-v7a` and `x86_64`,
 all 16 KB page aligned, as Google Play requires for apps targeting Android 15+.
+
+**Set your app's ABIs to match.** If any other dependency ships a library for
+an ABI TalaDB does not — AndroidX's graphics library adds 32-bit `x86`, for
+one — Android may install that ABI's directory and find no TalaDB library in
+it. Pin the app to the three TalaDB ships:
+
+```kotlin
+android {
+    defaultConfig {
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+    }
+}
+```
+
+The build may print `Unable to strip the following libraries … libtaladb_ffi.so,
+libtaladb_jni.so`. It is harmless: the AAR's libraries are already stripped,
+and AGP says so whenever an app has no NDK configured to strip them again.
 Your project also needs the kotlinx.serialization plugin to use typed
 collections:
 
@@ -121,13 +138,27 @@ own query embeddings. Use it to tune `efSearch` and the graph options.
   `$in`, `$contains`, `$set`, `$inc`, `$push`, `$group`, … — documented in the
   [engine docs](https://taladb.dev). Build them with `buildJsonObject`.
 - **`_id`**: every document has one. Leave it `null` on insert and the engine
-  assigns a ULID.
+  assigns a ULID. An `_id` you supply must be a ULID too; for a natural key —
+  a SKU, a server's id, a singleton settings document — use
+  `deriveDocId(collection, key)`, which always maps the same key to the same
+  ULID (the same function as the engine's and the JavaScript clients').
 - **Untyped access**: `db.collection("name")` works with raw `JsonObject`s.
 - **Encryption**: `TalaDB.open(file, TalaDBConfig(passphrase = key))`. The
   config's `toString()` never prints the passphrase.
-- **Errors**: the engine's errors (bad filter, missing index, wrong
-  passphrase, duplicate `_id`) throw `TalaDBException`; a call after `close()`
+- **Errors**: the engine's errors throw `TalaDBException`, whose `code` is the
+  engine's stable error code — the same strings TalaDB's JavaScript clients
+  expose as `error.code` — so branch on that, not the message. A wrong
+  passphrase is `TalaDBException.ENCRYPTION`; others include `INVALID_FILTER`,
+  `DUPLICATE_ID`, `INDEX_NOT_FOUND` and `STORAGE`. A call after `close()`
   throws `IllegalStateException`.
+
+  ```kotlin
+  try {
+      TalaDB.open(file, TalaDBConfig(passphrase = typed))
+  } catch (e: TalaDBException) {
+      if (e.code == TalaDBException.ENCRYPTION) showWrongPassphrase() else throw e
+  }
+  ```
 - **Closing**: `close()` waits for running operations and is idempotent.
 
 ## API reference

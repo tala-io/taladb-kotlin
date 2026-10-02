@@ -18,10 +18,11 @@
  *
  * Errors
  * ------
- * taladb_last_error() is thread-local and describes the most recent call on
- * the calling thread, so it is read here, in the same JNI call that failed,
- * and rethrown as dev.taladb.TalaDBException. Reading it from Kotlin later
- * could observe a different thread's slot.
+ * taladb_last_error() and taladb_last_error_code() are thread-local and
+ * describe the most recent call on the calling thread, so both are read here,
+ * in the same JNI call that failed, and rethrown as dev.taladb.TalaDBException
+ * (message, code). Reading them from Kotlin later could observe a different
+ * thread's slot.
  */
 #include <jni.h>
 #include <stdint.h>
@@ -45,7 +46,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     g_tala_exception = (*env)->NewGlobalRef(env, local);
     (*env)->DeleteLocalRef(env, local);
     if (g_tala_exception == NULL) return JNI_ERR;
-    g_exception_ctor = (*env)->GetMethodID(env, g_tala_exception, "<init>", "(Ljava/lang/String;)V");
+    g_exception_ctor = (*env)->GetMethodID(env, g_tala_exception, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
     if (g_exception_ctor == NULL) return JNI_ERR;
     local = (*env)->FindClass(env, "java/lang/String");
     if (local == NULL) return JNI_ERR;
@@ -79,10 +80,12 @@ static void throw_by_name(JNIEnv *env, const char *cls, const char *msg) {
     if (c != NULL) (*env)->ThrowNew(env, c, msg);
 }
 
-/* Throw TalaDBException carrying the engine's message for the call that just
- * failed on this thread, or `fallback` if it left none. */
+/* Throw TalaDBException carrying the engine's message and stable error code
+ * for the call that just failed on this thread, or `fallback` and no code if
+ * it left none. */
 static void throw_last_error(JNIEnv *env, const char *fallback) {
     const char *msg = taladb_last_error();
+    const char *code_utf8 = taladb_last_error_code(); /* static; never freed */
     if (msg == NULL) msg = fallback;
     /* ThrowNew expects modified UTF-8, whereas the engine returns standard
      * UTF-8. Decode a byte array instead so supplementary characters survive. */
@@ -98,8 +101,16 @@ static void throw_last_error(JNIEnv *env, const char *fallback) {
     jobject message = (*env)->NewObject(env, g_string, g_string_utf8_ctor, bytes, g_utf8_charset);
     (*env)->DeleteLocalRef(env, bytes);
     if (message == NULL) return;
-    jobject exception = (*env)->NewObject(env, g_tala_exception, g_exception_ctor, message);
+    /* Codes are ASCII identifiers ("Encryption", "InvalidFilter"), which are
+     * valid modified UTF-8, so NewStringUTF is safe for them. */
+    jstring code = NULL;
+    if (code_utf8 != NULL) {
+        code = (*env)->NewStringUTF(env, code_utf8);
+        if (code == NULL) { (*env)->DeleteLocalRef(env, message); return; }
+    }
+    jobject exception = (*env)->NewObject(env, g_tala_exception, g_exception_ctor, message, code);
     (*env)->DeleteLocalRef(env, message);
+    if (code != NULL) (*env)->DeleteLocalRef(env, code);
     if (exception == NULL) return;
     (*env)->Throw(env, exception);
     (*env)->DeleteLocalRef(env, exception);

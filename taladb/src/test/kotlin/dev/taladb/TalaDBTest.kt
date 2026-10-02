@@ -156,6 +156,7 @@ class TalaDBTest {
                 runCatching { notes.insertMany(listOf(Note(title = "new"), Note(id = id, title = "duplicate"))) }
                     .exceptionOrNull()
             assertTrue("expected TalaDBException, got $error", error is TalaDBException)
+            assertEquals(TalaDBException.DUPLICATE_ID, (error as TalaDBException).code)
             assertEquals(1L, notes.count())
         }
 
@@ -191,6 +192,7 @@ class TalaDBTest {
             notes.dropIndex("title")
             val error = runCatching { notes.dropIndex("title") }.exceptionOrNull()
             assertTrue("dropping a missing index must throw, got $error", error is TalaDBException)
+            assertEquals(TalaDBException.INDEX_NOT_FOUND, (error as TalaDBException).code)
             notes.dropCompoundIndex(listOf("stars", "title"))
             notes.dropFtsIndex("body")
         }
@@ -259,6 +261,7 @@ class TalaDBTest {
             docs.createVectorIndex("embedding", dimensions = 3)
             val error = runCatching { docs.findNearest("embedding", floatArrayOf(1f, 0f), topK = 1) }.exceptionOrNull()
             assertTrue("expected TalaDBException, got $error", error is TalaDBException)
+            assertEquals(TalaDBException.VECTOR_DIMENSION_MISMATCH, (error as TalaDBException).code)
         }
 
     @Test
@@ -302,6 +305,9 @@ class TalaDBTest {
 
             val wrong = runCatching { TalaDB.open(encrypted, TalaDBConfig(passphrase = "battery staple")) }.exceptionOrNull()
             assertTrue("expected TalaDBException, got $wrong", wrong is TalaDBException)
+            // A code to branch on, and a message a person can act on.
+            assertEquals(TalaDBException.ENCRYPTION, (wrong as TalaDBException).code)
+            assertTrue(wrong.message, wrong.message!!.contains("wrong passphrase"))
 
             TalaDB.open(encrypted, TalaDBConfig(passphrase = "correct horse")).use {
                 assertEquals("hidden", it.collection<Note>("notes").findOne()?.title)
