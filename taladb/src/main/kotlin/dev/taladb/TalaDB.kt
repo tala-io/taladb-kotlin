@@ -31,7 +31,7 @@ import kotlinx.serialization.serializer
  */
 public class TalaDB private constructor(
     private var handle: Long,
-    private val dispatcher: CoroutineDispatcher,
+    internal val dispatcher: CoroutineDispatcher,
 ) : AutoCloseable {
     // Operations hold the read lock for the duration of their native call;
     // close() takes the write lock. Without it, close() on one thread while

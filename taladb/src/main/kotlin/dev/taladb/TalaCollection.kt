@@ -3,9 +3,7 @@ package dev.taladb
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonArray
@@ -154,17 +152,30 @@ public class TalaCollection<T> internal constructor(
             // Subscribe before reading the initial state, so a write that
             // lands between the two still wakes the loop below.
             val watch = database.watchOpen(name, filter, projection)
+            // The collector's thread is an app's main thread. Comparing and
+            // decoding each snapshot, and unsubscribing, run on the database's
+            // dispatcher instead: unsubscribing waits for the database lock,
+            // which every other running live query takes for up to a poll, so
+            // on the main thread leaving a screen froze the UI for a poll per
+            // live query it had.
+            var last: JsonElement? = null
+            suspend fun publish(snapshot: JsonElement) {
+                val changed =
+                    withContext(database.dispatcher) {
+                        if (snapshot == last) null else snapshot.jsonArray.map(::decode).also { last = snapshot }
+                    }
+                if (changed != null) emit(changed)
+            }
             try {
-                emit(call("find", { listOfNotNull(filter, projection?.toJson()) }) { it })
+                publish(call("find", { listOfNotNull(filter, projection?.toJson()) }) { it })
                 while (true) {
                     coroutineContext.ensureActive()
-                    database.watchNext(watch)?.let { emit(it) }
+                    database.watchNext(watch)?.let { publish(it) }
                 }
             } finally {
-                withContext(NonCancellable) { database.watchClose(watch) }
+                withContext(NonCancellable + database.dispatcher) { database.watchClose(watch) }
             }
-        }.distinctUntilChanged()
-            .map { snapshot -> snapshot.jsonArray.map(::decode) }
+        }
 
     // -- Indexes --------------------------------------------------------------
 
