@@ -61,6 +61,24 @@ public class TalaCollection<T> internal constructor(
     public suspend fun find(filter: JsonObject = MatchAll): List<T> =
         call("find", { listOf(filter) }) { result -> result.jsonArray.map(::decode) }
 
+    /**
+     * The documents matching [filter], with only the fields [projection]
+     * selects. Leaving out a large field — an embedding — means it is never
+     * copied across from the engine at all.
+     *
+     * For a typed collection, every field the projection removes must be
+     * nullable or have a default in [T], or decoding fails.
+     *
+     * ```kotlin
+     * notes.find(projection = Projection.exclude("embedding"))
+     * ```
+     */
+    public suspend fun find(
+        filter: JsonObject = MatchAll,
+        projection: Projection?,
+    ): List<T> =
+        call("find", { listOfNotNull(filter, projection?.toJson()) }) { result -> result.jsonArray.map(::decode) }
+
     /** The first document matching [filter], or `null`. */
     public suspend fun findOne(filter: JsonObject = MatchAll): T? =
         call("findOne", { listOf(filter) }) { if (it is JsonNull) null else decode(it) }
@@ -120,13 +138,24 @@ public class TalaCollection<T> internal constructor(
      *     .collect { open -> render(open) }
      * ```
      */
-    public fun watch(filter: JsonObject = MatchAll): Flow<List<T>> =
+    public fun watch(filter: JsonObject = MatchAll): Flow<List<T>> = watch(filter, projection = null)
+
+    /**
+     * [watch], with every emission limited to the fields [projection]
+     * selects. A live query sends a fresh result across on every write, so
+     * excluding a large field the screen does not show — an embedding — keeps
+     * each update small. The same decoding rule as [find] applies.
+     */
+    public fun watch(
+        filter: JsonObject = MatchAll,
+        projection: Projection?,
+    ): Flow<List<T>> =
         flow {
             // Subscribe before reading the initial state, so a write that
             // lands between the two still wakes the loop below.
-            val watch = database.watchOpen(name, filter)
+            val watch = database.watchOpen(name, filter, projection)
             try {
-                emit(call("find", { listOf(filter) }) { it })
+                emit(call("find", { listOfNotNull(filter, projection?.toJson()) }) { it })
                 while (true) {
                     coroutineContext.ensureActive()
                     database.watchNext(watch)?.let { emit(it) }

@@ -337,13 +337,16 @@ release_col:
 
 /* Returns a non-zero watch handle. `filter` may be null for all documents. */
 JNIEXPORT jlong JNICALL Java_dev_taladb_Native_watchOpen(
-    JNIEnv *env, jobject self, jlong h, jbyteArray collection, jbyteArray filter) {
+    JNIEnv *env, jobject self, jlong h, jbyteArray collection, jbyteArray filter, jbyteArray options) {
     (void)self;
-    Utf8 col, flt;
+    Utf8 col, flt, opt;
     if (utf8_get(env, collection, &col) != 0) return 0;
     if (utf8_get(env, filter, &flt) != 0) { utf8_release(env, &col); return 0; }
-    TalaDbWatch *w = taladb_watch(handle_of(h), utf8_ptr(&col), utf8_ptr(&flt));
+    if (utf8_get(env, options, &opt) != 0) { utf8_release(env, &flt); utf8_release(env, &col); return 0; }
+    /* A null options array reaches the engine as NULL: a plain watch. */
+    TalaDbWatch *w = taladb_watch_with_options(handle_of(h), utf8_ptr(&col), utf8_ptr(&flt), utf8_ptr(&opt));
     if (w == NULL) throw_last_error(env, "failed to open live query");
+    utf8_release(env, &opt);
     utf8_release(env, &flt);
     utf8_release(env, &col);
     return (jlong)(intptr_t)w;
