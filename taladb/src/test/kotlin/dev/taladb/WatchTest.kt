@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -166,6 +167,33 @@ class WatchTest {
             } finally {
                 main.close()
             }
+        }
+
+    /**
+     * A screen's live queries start while others are running. Each running
+     * one waits on the engine in 250 ms polls; when a poll held the database
+     * lock, a new live query's first result took 350 ms or more.
+     */
+    @Test
+    fun aNewLiveQueryDoesNotWaitBehindRunningOnes() =
+        runBlocking {
+            val notes = db.collection<Note>("notes")
+            notes.insert(Note(title = "a"))
+            val emitted = Channel<Unit>(Channel.UNLIMITED)
+            val running = List(5) { launch(Dispatchers.Default) { notes.watch().collect { emitted.send(Unit) } } }
+            withTimeout(10_000) { repeat(5) { emitted.receive() } }
+            delay(300) // every running query is now inside a native wait
+
+            var worstMs = 0L
+            repeat(5) {
+                val start = System.nanoTime()
+                withTimeout(10_000) { notes.watch().first() }
+                worstMs = maxOf(worstMs, (System.nanoTime() - start) / 1_000_000)
+                delay(73) // land at different points in the running polls
+            }
+            assertTrue("a new live query took $worstMs ms to deliver its first result", worstMs < 150)
+            running.forEach { it.cancel() }
+            withTimeout(10_000) { running.joinAll() }
         }
 
     private suspend fun kotlinx.coroutines.Job.cancelAndJoinWithin() {
