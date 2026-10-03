@@ -13,10 +13,6 @@ Documents, MongoDB-style filters and updates, secondary and compound indexes,
 full-text search, vector search and hybrid search, with optional encryption at
 rest. Everything runs on the device in a single file.
 
-> **Status: pre-release.** It needs engine ABI version 2, which no TalaDB
-> release ships yet, so it is not on Maven Central. See [Development](#development)
-> to build it from source.
-
 ## Install
 
 ```kotlin
