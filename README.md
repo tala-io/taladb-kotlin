@@ -102,6 +102,31 @@ notes.watch(buildJsonObject { put("done", false) })
 Each collector holds its own subscription, which closes when the collector is
 cancelled. Closing the database ends every collection.
 
+### Projection
+
+`find` and `watch` take a `Projection` to return only some fields. It matters
+most for live queries: every write sends a fresh result across, so leaving out
+a large field the screen does not show — an embedding — keeps each update
+small. The excluded field is never copied out of the engine.
+
+```kotlin
+notes.watch(projection = Projection.exclude("embedding")).collect { render(it) }
+notes.find(projection = Projection.include("title", "tags"))
+```
+
+For a typed collection, give every field a projection can remove a default
+(`val embedding: List<Float>? = null`), or decoding fails. `_id` is always
+returned.
+
+### Full-text search and stopwords
+
+`searchText` and the text side of `hybridSearch` rank with BM25 and OR
+semantics. Common English words ("to", "the", "and", …) are dropped from the
+query, so "kind to a classmate" does not match every document containing "to";
+a query made only of such words is searched as typed. Turn it off with
+`Bm25Options(stopwords = false)` — documents are indexed in full either way, so
+the switch needs no reindex.
+
 ### Migrations
 
 ```kotlin

@@ -2,7 +2,9 @@ package dev.taladb
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -74,6 +76,12 @@ public data class HnswOptions(
 public data class Bm25Options(
     val k1: Double? = null,
     val b: Double? = null,
+    /**
+     * Drop common English words ("to", "the", "and", …) from the query
+     * before ranking, so they do not match nearly every document. `null`
+     * keeps the engine default, which is on; `false` searches every word.
+     */
+    val stopwords: Boolean? = null,
 )
 
 /**
@@ -98,6 +106,7 @@ public data class HybridOptions(
             candidates?.let { put("candidates", it) }
             bm25.k1?.let { put("k1", it) }
             bm25.b?.let { put("b", it) }
+            bm25.stopwords?.let { put("stopwords", it) }
         }
 }
 
@@ -105,7 +114,34 @@ internal fun Bm25Options.toJson(): JsonObject =
     buildJsonObject {
         k1?.let { put("k1", it) }
         b?.let { put("b", it) }
+        stopwords?.let { put("stopwords", it) }
     }
+
+/**
+ * Which fields a read returns — for [TalaCollection.find] and
+ * [TalaCollection.watch]. `_id` is always returned.
+ *
+ * @property include Only these fields, when set.
+ * @property exclude Every field except these, when set; applied after [include].
+ */
+public data class Projection(
+    val include: List<String>? = null,
+    val exclude: List<String>? = null,
+) {
+    internal fun toJson(): JsonObject =
+        buildJsonObject {
+            include?.let { put("fields", JsonArray(it.map(::JsonPrimitive))) }
+            exclude?.let { put("exclude", JsonArray(it.map(::JsonPrimitive))) }
+        }
+
+    public companion object {
+        /** Only [fields], plus `_id`. */
+        public fun include(vararg fields: String): Projection = Projection(include = fields.toList())
+
+        /** Every field except [fields]. */
+        public fun exclude(vararg fields: String): Projection = Projection(exclude = fields.toList())
+    }
+}
 
 /** A document with its similarity or relevance score. Higher is closer. */
 public data class ScoredDocument<T>(

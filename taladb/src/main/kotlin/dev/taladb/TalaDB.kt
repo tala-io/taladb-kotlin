@@ -116,15 +116,17 @@ public class TalaDB private constructor(
     internal suspend fun watchOpen(
         collection: String,
         filter: JsonObject,
+        projection: Projection? = null,
     ): Long =
         acquireResource(
             dispatcher,
             acquire = {
                 val name = collection.cString()
                 val filterBytes = filter.toString().cString()
+                val optionBytes = projection?.toJson()?.toString()?.cString()
                 lock.write {
                     check(handle != 0L) { "TalaDB database is closed" }
-                    Native.watchOpen(handle, name, filterBytes).also { watches += it }
+                    Native.watchOpen(handle, name, filterBytes, optionBytes).also { watches += it }
                 }
             },
             release = ::watchClose,
