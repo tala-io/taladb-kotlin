@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/tala-db-dark.png">
+  <img src=".github/assets/tala-db.png" alt="TalaDB" width="240">
+</picture>
+
 # TalaDB for Android
 
 Kotlin bindings for [TalaDB](https://github.com/tala-io/taladb), an embedded
