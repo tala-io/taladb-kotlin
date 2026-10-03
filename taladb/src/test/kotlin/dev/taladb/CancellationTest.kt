@@ -78,9 +78,13 @@ class CancellationTest {
         @Volatile var completed: CountDownLatch? = null
 
         override fun dispatch(context: CoroutineContext, block: Runnable) {
+            // Read the latch when the block is queued, not after it runs: the
+            // previous call's block resumes the test before it returns here,
+            // and would otherwise release the next call's latch early.
+            val latch = completed
             worker.dispatch(context) {
                 block.run()
-                completed?.countDown()
+                latch?.countDown()
             }
         }
 
