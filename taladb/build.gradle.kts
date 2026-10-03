@@ -39,6 +39,15 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    lint {
+        warningsAsErrors = true
+        // Version-freshness checks depend on what was released today, not on
+        // this change; Dependabot-style bumps are a separate decision.
+        disable += setOf("NewerVersionAvailable", "GradleDependency", "AndroidGradlePluginVersion")
+        // The engine ships arm64-v8a, armeabi-v7a and x86_64 only.
+        disable += "ChromeOsAbiSupport"
+    }
 }
 
 // libtaladb_ffi.so from the engine sits beside the CMake-built libtaladb_jni.so
@@ -56,6 +65,7 @@ androidComponents {
 
 kotlin {
     explicitApi()
+    compilerOptions { allWarningsAsErrors = true }
 }
 
 dependencies {

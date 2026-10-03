@@ -99,14 +99,22 @@ jobs:
       - name: AAR libraries load on device (ABIs, 16 KB alignment, dependency names)
         run: scripts/check-aar.sh
 
-      - name: API docs
-        run: ./gradlew :taladb:dokkaGeneratePublicationHtml --console=plain
+      # Warnings fail the build (taladb/build.gradle.kts, android.lint).
+      - name: Android lint
+        run: ./gradlew :taladb:lintRelease --console=plain
+
+      # The POM, sources and Dokka javadoc jars Maven Central requires, built
+      # and checked the way the publish workflow builds them, minus signing.
+      - name: Publication dry run
+        run: scripts/check-publication.sh
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-reports
-          path: taladb/build/reports/tests/
+          path: |
+            taladb/build/reports/tests/
+            taladb/build/reports/lint-results-release.html
 
       - uses: actions/upload-artifact@v4
         with:
