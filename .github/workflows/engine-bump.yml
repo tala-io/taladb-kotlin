@@ -32,7 +32,7 @@ jobs:
           SHA256: ${{ github.event.client_payload.sha256 || inputs.sha256 }}
         run: |
           set -euo pipefail
-          URL="https://github.com/tala-io/taladb/releases/download/v$VERSION/taladb-ffi-android-$VERSION.zip"
+          URL="https://github.com/taladb/taladb/releases/download/v$VERSION/taladb-ffi-android-$VERSION.zip"
           sed -i \
             -e "s|^ref=.*|ref=v$VERSION|" \
             -e "s|^version=.*|version=$VERSION|" \

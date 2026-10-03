@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: tala-io/taladb
+          repository: taladb/taladb
           ref: ${{ steps.engine.outputs.ref }}
           path: engine-src
 

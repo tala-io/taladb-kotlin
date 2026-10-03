@@ -165,7 +165,7 @@ mavenPublishing {
     pom {
         name = "TalaDB for Android"
         description = "Kotlin bindings for TalaDB, an embedded document and vector database."
-        url = "https://github.com/tala-io/taladb-kotlin"
+        url = "https://github.com/taladb/taladb-kotlin"
         licenses {
             license {
                 name = "MIT"
@@ -178,15 +178,15 @@ mavenPublishing {
         }
         developers {
             developer {
-                id = "tala-io"
+                id = "taladb"
                 name = "TalaDB"
-                url = "https://github.com/tala-io"
+                url = "https://github.com/taladb"
             }
         }
         scm {
-            url = "https://github.com/tala-io/taladb-kotlin"
-            connection = "scm:git:https://github.com/tala-io/taladb-kotlin.git"
-            developerConnection = "scm:git:ssh://git@github.com/tala-io/taladb-kotlin.git"
+            url = "https://github.com/taladb/taladb-kotlin"
+            connection = "scm:git:https://github.com/taladb/taladb-kotlin.git"
+            developerConnection = "scm:git:ssh://git@github.com/taladb/taladb-kotlin.git"
         }
     }
 }
@@ -201,7 +201,7 @@ dokka {
         includes.from("Module.md")
         sourceLink {
             localDirectory = file("src/main/kotlin")
-            remoteUrl("https://github.com/tala-io/taladb-kotlin/tree/main/taladb/src/main/kotlin")
+            remoteUrl("https://github.com/taladb/taladb-kotlin/tree/main/taladb/src/main/kotlin")
             remoteLineSuffix = "#L"
         }
     }

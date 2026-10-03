@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the TalaDB native library from a local checkout of tala-io/taladb and
+# Build the TalaDB native library from a local checkout of taladb/taladb and
 # stage it in engine/, where the Gradle build looks for it.
 #
 #   engine/include/taladb.h                  C header the JNI shim compiles against

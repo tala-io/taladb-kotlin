@@ -1,6 +1,6 @@
 # Module taladb-android
 
-Kotlin bindings for [TalaDB](https://github.com/tala-io/taladb), an embedded
+Kotlin bindings for [TalaDB](https://github.com/taladb/taladb), an embedded
 document and vector database. Everything runs on the device, in one file.
 
 Start with [dev.taladb.TalaDB.Companion.open], then

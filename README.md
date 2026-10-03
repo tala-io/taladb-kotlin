@@ -5,7 +5,7 @@
 
 # TalaDB for Android
 
-Kotlin bindings for [TalaDB](https://github.com/tala-io/taladb), an embedded
+Kotlin bindings for [TalaDB](https://github.com/taladb/taladb), an embedded
 document and vector database, for native Android apps that do not use React
 Native.
 
@@ -177,7 +177,7 @@ and `docs.yml` publishes them to GitHub Pages from `main`.
 ```
 Kotlin API (TalaDB, TalaCollection)        dev.taladb, this repo
   └─ Native (JNI)  ──►  libtaladb_jni.so    src/main/cpp/taladb_jni.c, this repo
-                          └─►  libtaladb_ffi.so   the engine's C FFI, from tala-io/taladb
+                          └─►  libtaladb_ffi.so   the engine's C FFI, from taladb/taladb
 ```
 
 The JNI shim is small on purpose. Most operations go through the engine's
@@ -197,7 +197,7 @@ You need JDK 17, the Android SDK with NDK `30.0.16248370` and CMake 3.22.1,
 and Rust with `cargo-ndk` to build the engine.
 
 ```sh
-# 1. Stage the engine in engine/ — from a checkout of tala-io/taladb...
+# 1. Stage the engine in engine/ — from a checkout of taladb/taladb...
 scripts/build-engine.sh ../taladb
 #    ...or download the release pinned in engine.properties (Android libraries only)
 scripts/fetch-engine.sh
