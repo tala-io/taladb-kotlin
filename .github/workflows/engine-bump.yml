@@ -41,8 +41,14 @@ jobs:
             engine.properties
           git diff
 
+      # A PR opened with the default GITHUB_TOKEN starts no workflows, so CI
+      # would never test the release, and the taladb org does not let Actions
+      # open PRs with it anyway. ENGINE_BUMP_TOKEN — a fine-grained token with
+      # Contents and Pull requests write on this repository — opens it as its
+      # owner, so CI runs on it.
       - uses: peter-evans/create-pull-request@v7
         with:
+          token: ${{ secrets.ENGINE_BUMP_TOKEN || github.token }}
           branch: engine-bump/v${{ github.event.client_payload.version || inputs.version }}
           commit-message: "chore: build against TalaDB engine v${{ github.event.client_payload.version || inputs.version }}"
           title: "Build against TalaDB engine v${{ github.event.client_payload.version || inputs.version }}"
