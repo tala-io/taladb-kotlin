@@ -1,8 +1,10 @@
 package dev.taladb
 
 import java.io.File
+import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
+import kotlin.concurrent.withLock
 import kotlin.concurrent.write
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +33,7 @@ import kotlinx.serialization.serializer
  */
 public class TalaDB private constructor(
     private var handle: Long,
-    private val dispatcher: CoroutineDispatcher,
+    internal val dispatcher: CoroutineDispatcher,
 ) : AutoCloseable {
     // Operations hold the read lock for the duration of their native call;
     // close() takes the write lock. Without it, close() on one thread while
@@ -39,10 +41,10 @@ public class TalaDB private constructor(
     // native code, not an exception.
     private val lock = ReentrantReadWriteLock()
 
-    // Native live-query handles, guarded by `lock`. Each keeps the database's
-    // storage open, so close() closes them all rather than leaving the file
-    // held until each collector next wakes.
-    private val watches = HashSet<Long>()
+    // Open live queries, guarded by synchronizing on the set. Each native
+    // handle keeps the database's storage open, so close() closes them all
+    // rather than leaving the file held until each collector next wakes.
+    private val watches = HashSet<LiveQuery>()
 
     /** `true` once [close] has run. */
     public val isClosed: Boolean
@@ -103,8 +105,12 @@ public class TalaDB private constructor(
     override fun close() {
         lock.write {
             if (handle != 0L) {
-                watches.forEach(Native::watchClose)
-                watches.clear()
+                val open = synchronized(watches) { watches.toList().also { watches.clear() } }
+                // Stop every live query before waiting on any: each then waits
+                // only for the poll already in flight, so close() takes at
+                // most one poll however many are open.
+                open.forEach { it.closing = true }
+                open.forEach { it.close() }
                 Native.close(handle)
                 handle = 0L
             }
@@ -117,16 +123,20 @@ public class TalaDB private constructor(
         collection: String,
         filter: JsonObject,
         projection: Projection? = null,
-    ): Long =
+    ): LiveQuery =
         acquireResource(
             dispatcher,
             acquire = {
                 val name = collection.cString()
                 val filterBytes = filter.toString().cString()
                 val optionBytes = projection?.toJson()?.toString()?.cString()
-                lock.write {
+                // An ordinary operation on the handle: the read lock, not the
+                // write lock, so subscribing never waits behind other live
+                // queries' polls.
+                lock.read {
                     check(handle != 0L) { "TalaDB database is closed" }
-                    Native.watchOpen(handle, name, filterBytes, optionBytes).also { watches += it }
+                    LiveQuery(Native.watchOpen(handle, name, filterBytes, optionBytes))
+                        .also { synchronized(watches) { watches += it } }
                 }
             },
             release = ::watchClose,
@@ -134,23 +144,53 @@ public class TalaDB private constructor(
 
     /**
      * Wait up to [WATCH_POLL_MS] for a write. Returns the new snapshot, or
-     * null on timeout. Holds the read lock only for that bounded wait, so
-     * close() is delayed by at most one poll.
+     * null on timeout.
+     *
+     * Holds only this live query's own lock, not the database's: a native
+     * watch needs no database handle (it keeps the storage open itself), and
+     * holding the database lock through a 250 ms wait made every other
+     * subscribe, unsubscribe and close wait behind each running live query's
+     * poll.
      */
-    internal suspend fun watchNext(watch: Long): JsonElement? =
+    internal suspend fun watchNext(watch: LiveQuery): JsonElement? =
         withContext(dispatcher) {
-            val bytes =
-                lock.read {
-                    check(handle != 0L && watch in watches) { "TalaDB database is closed" }
-                    Native.watchNext(watch, WATCH_POLL_MS)
-                }
+            val bytes = watch.next(WATCH_POLL_MS)
             bytes?.let { TalaJson.parseToJsonElement(it.decodeToString()) }
         }
 
-    /** Idempotent: close() may already have closed it. */
-    internal fun watchClose(watch: Long) {
-        lock.write {
-            if (watches.remove(watch)) Native.watchClose(watch)
+    /** Idempotent: close() may already have closed it. Waits for this query's own poll only. */
+    internal fun watchClose(watch: LiveQuery) {
+        synchronized(watches) { watches -= watch }
+        watch.close()
+    }
+
+    /**
+     * One native live query. The engine forbids closing a watch while a call
+     * on it is in progress, so [next] and [close] share a lock; a fair one,
+     * so a close waiting on a poll goes next rather than losing the lock to
+     * the loop's following poll.
+     */
+    internal class LiveQuery(private val pointer: Long) {
+        private val lock = ReentrantLock(true)
+        private var open = true
+
+        /** Set before [close] by TalaDB.close(), so no new poll starts meanwhile. */
+        @Volatile var closing = false
+
+        fun next(timeoutMs: Int): ByteArray? =
+            lock.withLock {
+                check(open && !closing) { "TalaDB database is closed" }
+                Native.watchNext(pointer, timeoutMs)
+            }
+
+        fun close() {
+            closing = true
+            lock.withLock {
+                if (open) {
+                    open = false
+                    Native.watchClose(pointer)
+                }
+            }
         }
     }
 

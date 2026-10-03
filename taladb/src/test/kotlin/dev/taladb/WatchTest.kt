@@ -1,9 +1,15 @@
 package dev.taladb
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -16,6 +22,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.util.concurrent.Executors
 
 class WatchTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -118,6 +125,75 @@ class WatchTest {
 
             db.close()
             db = TalaDB.open(tmp.root.resolve("watch.db"))
+        }
+
+    /**
+     * An app collects live queries on its main thread, and a screen that goes
+     * away cancels several at once while the next screen's are running.
+     * Unsubscribing waits for the database lock, which each running query
+     * takes for up to a poll; done on the collector's thread, that froze an
+     * Android app's UI for over a second when it left a screen with five.
+     */
+    @Test
+    fun aLiveQueryNeverHoldsTheCollectorsThread() =
+        runBlocking {
+            val main = Executors.newSingleThreadExecutor { Thread(it, "fake-main") }.asCoroutineDispatcher()
+            try {
+                val notes = db.collection<Note>("notes")
+                notes.insert(Note(title = "a"))
+                val app = CoroutineScope(main)
+                val emitted = Channel<Unit>(Channel.UNLIMITED)
+                // Navigating: the next screen's queries are already running
+                // when the previous screen's are cancelled.
+                val queries = List(5) { app.launch { notes.watch().collect { emitted.send(Unit) } } }
+                val nextScreen = List(3) { app.launch { notes.watch().collect { emitted.send(Unit) } } }
+                withTimeout(10_000) { repeat(8) { emitted.receive() } }
+                delay(300) // every query is now inside a native wait, holding the read lock
+
+                withContext(main) { queries.forEach { it.cancel() } }
+                // Hop onto the "main" thread repeatedly while the five
+                // unsubscribe; no hop should wait behind one.
+                var worstMs = 0L
+                repeat(60) {
+                    val start = System.nanoTime()
+                    withContext(main) {}
+                    worstMs = maxOf(worstMs, (System.nanoTime() - start) / 1_000_000)
+                    delay(10)
+                }
+                assertTrue("the collector's thread was held for $worstMs ms", worstMs < 100)
+                withTimeout(10_000) { queries.joinAll() }
+                nextScreen.forEach { it.cancel() }
+                withTimeout(10_000) { nextScreen.joinAll() }
+            } finally {
+                main.close()
+            }
+        }
+
+    /**
+     * A screen's live queries start while others are running. Each running
+     * one waits on the engine in 250 ms polls; when a poll held the database
+     * lock, a new live query's first result took 350 ms or more.
+     */
+    @Test
+    fun aNewLiveQueryDoesNotWaitBehindRunningOnes() =
+        runBlocking {
+            val notes = db.collection<Note>("notes")
+            notes.insert(Note(title = "a"))
+            val emitted = Channel<Unit>(Channel.UNLIMITED)
+            val running = List(5) { launch(Dispatchers.Default) { notes.watch().collect { emitted.send(Unit) } } }
+            withTimeout(10_000) { repeat(5) { emitted.receive() } }
+            delay(300) // every running query is now inside a native wait
+
+            var worstMs = 0L
+            repeat(5) {
+                val start = System.nanoTime()
+                withTimeout(10_000) { notes.watch().first() }
+                worstMs = maxOf(worstMs, (System.nanoTime() - start) / 1_000_000)
+                delay(73) // land at different points in the running polls
+            }
+            assertTrue("a new live query took $worstMs ms to deliver its first result", worstMs < 150)
+            running.forEach { it.cancel() }
+            withTimeout(10_000) { running.joinAll() }
         }
 
     private suspend fun kotlinx.coroutines.Job.cancelAndJoinWithin() {
